@@ -31,17 +31,21 @@ public class LoanSimulationService {
             throw new IllegalArgumentException("O número de meses deve ser maior que zero.");
         }
 
-        var taxaAnual = determinarTaxaJuros(calcularIdade(request.getDataNascimento()));
+        int idade = calcularIdade(request.getDataNascimento());
+        if (idade < 18 || idade > 80) {
+            throw new IllegalArgumentException("A idade do cliente deve estar entre 18 e 80 anos.");
+        }
+
+        var taxaAnual = determinarTaxaJuros(idade);
         var taxaMensal = taxaAnual.divide(BigDecimal.valueOf(12), 10, RoundingMode.HALF_EVEN);
 
         var parcelaMensal = calcularParcela(valorEmprestimo, taxaMensal, meses);
+        var valorTotalPago = parcelaMensal.multiply(BigDecimal.valueOf(meses)).setScale(2, RoundingMode.HALF_EVEN);
+        var totalJurosPago = valorTotalPago.subtract(valorEmprestimo).setScale(2, RoundingMode.HALF_EVEN);
 
-        var valorTotalPago = parcelaMensal.multiply(BigDecimal.valueOf(meses));
-
-        var totalJurosPago = valorTotalPago.subtract(valorEmprestimo);
-
-        return new SimulationResult(valorTotalPago, parcelaMensal, totalJurosPago);
+        return new SimulationResult(valorTotalPago, parcelaMensal.setScale(2, RoundingMode.HALF_EVEN), totalJurosPago);
     }
+
 
     public List<SimulationResult> bulkSimulate(List<SimulationRequest> requests) {
         return requests.parallelStream()
@@ -49,11 +53,15 @@ public class LoanSimulationService {
                 .collect(Collectors.toList());
     }
 
-    private int calcularIdade(LocalDate birthDate) {
-        return Period.between(birthDate, LocalDate.now()).getYears();
+    private int calcularIdade(LocalDate dataNascimento) {
+        return Period.between(dataNascimento, LocalDate.now()).getYears();
     }
 
     private BigDecimal determinarTaxaJuros(int age) {
+        return getDecimal(age);
+    }
+
+    private static BigDecimal getDecimal(int age) {
         if (age <= 25) return BigDecimal.valueOf(0.05);
         else if (age <= 40) return BigDecimal.valueOf(0.03);
         else if (age <= 60) return BigDecimal.valueOf(0.02);
@@ -61,19 +69,8 @@ public class LoanSimulationService {
     }
 
     private BigDecimal calcularParcela(BigDecimal valor, BigDecimal taxa, int meses) {
-        if (valor.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException("O valor do empréstimo deve ser maior que zero.");
-        }
-        if (meses <= 0) {
-            throw new IllegalArgumentException("O número de meses deve ser maior que zero.");
-        }
-        if (taxa.compareTo(BigDecimal.ZERO) < 0) {
-            throw new IllegalArgumentException("A taxa de juros não pode ser negativa.");
-        }
-
-        if (taxa.compareTo(BigDecimal.ZERO) == 0) {
-            return valor.divide(BigDecimal.valueOf(meses), RoundingMode.HALF_EVEN);
-        }
+        BigDecimal valor1 = getBigDecimal(valor, taxa, meses);
+        if (valor1 != null) return valor1;
 
         var base = BigDecimal.ONE.add(taxa);
         var basePowMeses = base.pow(meses, new MathContext(15, RoundingMode.HALF_EVEN));
@@ -85,5 +82,22 @@ public class LoanSimulationService {
         }
 
         return numerador.divide(denominador, 10, RoundingMode.HALF_EVEN);
+    }
+
+    private static BigDecimal getBigDecimal(BigDecimal valor, BigDecimal taxa, int meses) {
+        if (valor.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("O valor do empréstimo deve ser maior que zero.");
+        }
+        if (meses <= 0) {
+            throw new IllegalArgumentException("O número de meses deve ser maior que zero.");
+        }
+        if (taxa.compareTo(BigDecimal.ZERO) < 0) {
+            throw new IllegalArgumentException("A taxa de juros não pode ser negativa.");
+        }
+
+        if (taxa.compareTo(BigDecimal.ZERO) == 0) {
+            return valor.divide(BigDecimal.valueOf(meses), 10, RoundingMode.HALF_EVEN);
+        }
+        return null;
     }
 }
