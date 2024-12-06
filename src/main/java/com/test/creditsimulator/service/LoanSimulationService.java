@@ -20,6 +20,9 @@ public class LoanSimulationService {
     @Autowired
     private MessagingService messagingService;
 
+    @Autowired
+    private CurrencyConversionService currencyService;
+
     public SimulationResult simulate(SimulationRequest request) {
         var valorEmprestimo = request.getValorEmprestimo();
         if (valorEmprestimo.compareTo(BigDecimal.ZERO) <= 0) {
@@ -36,16 +39,51 @@ public class LoanSimulationService {
             throw new IllegalArgumentException("A idade do cliente deve estar entre 18 e 80 anos.");
         }
 
-        var taxaAnual = determinarTaxaJuros(idade);
-        var taxaMensal = taxaAnual.divide(BigDecimal.valueOf(12), 10, RoundingMode.HALF_EVEN);
+        var moeda = request.getMoeda();
+        if (moeda == null || moeda.isEmpty()) {
+            throw new IllegalArgumentException("A moeda é obrigatória.");
+        }
 
-        var parcelaMensal = calcularParcela(valorEmprestimo, taxaMensal, meses);
-        var valorTotalPago = parcelaMensal.multiply(BigDecimal.valueOf(meses)).setScale(2, RoundingMode.HALF_EVEN);
-        var totalJurosPago = valorTotalPago.subtract(valorEmprestimo).setScale(2, RoundingMode.HALF_EVEN);
+        if ("VARIAVEL".equalsIgnoreCase(request.getTipoTaxa()) &&
+                (request.getTaxasVariaveis() == null || request.getTaxasVariaveis().isEmpty())) {
+            throw new IllegalArgumentException("As taxas variáveis devem ser fornecidas para o tipo VARIAVEL.");
+        }
 
-        return new SimulationResult(valorTotalPago, parcelaMensal.setScale(2, RoundingMode.HALF_EVEN), totalJurosPago);
+        BigDecimal valorTotalPago;
+        BigDecimal parcelaMensal;
+        BigDecimal totalJurosPago;
+
+        var valorConvertido = currencyService.converter(valorEmprestimo, moeda);
+
+        if ("FIXA".equalsIgnoreCase(request.getTipoTaxa())) {
+            var taxaAnual = determinarTaxaJuros(idade);
+            var taxaMensal = taxaAnual.divide(BigDecimal.valueOf(12), 10, RoundingMode.HALF_EVEN);
+
+            parcelaMensal = calcularParcela(valorConvertido, taxaMensal, meses);
+            valorTotalPago = parcelaMensal.multiply(BigDecimal.valueOf(meses));
+            totalJurosPago = valorTotalPago.subtract(valorConvertido);
+
+        } else if ("VARIAVEL".equalsIgnoreCase(request.getTipoTaxa())) {
+            valorTotalPago = calcularComTaxaVariavel(valorConvertido, meses, request.getTaxasVariaveis());
+            parcelaMensal = valorTotalPago.divide(BigDecimal.valueOf(meses), 2, RoundingMode.HALF_EVEN);
+            totalJurosPago = valorTotalPago.subtract(valorConvertido);
+        } else {
+            throw new IllegalArgumentException("Tipo de taxa inválido.");
+        }
+
+        var result = new SimulationResult(
+                valorTotalPago.setScale(2, RoundingMode.HALF_EVEN),
+                parcelaMensal.setScale(2, RoundingMode.HALF_EVEN),
+                totalJurosPago.setScale(2, RoundingMode.HALF_EVEN)
+        );
+
+        messagingService.sendMessage(
+                "simulation-results",
+                "Resultado da simulação: " + result
+        );
+
+        return result;
     }
-
 
     public List<SimulationResult> bulkSimulate(List<SimulationRequest> requests) {
         return requests.parallelStream()
@@ -99,5 +137,35 @@ public class LoanSimulationService {
             return valor.divide(BigDecimal.valueOf(meses), 10, RoundingMode.HALF_EVEN);
         }
         return null;
+    }
+
+    private BigDecimal calcularComTaxaVariavel(BigDecimal valor, int meses, List<SimulationRequest.TaxaVariavel> taxas) {
+        if (taxas == null || taxas.isEmpty()) {
+            throw new IllegalArgumentException("As taxas variáveis devem ser fornecidas para o tipo VARIAVEL.");
+        }
+
+        BigDecimal valorRestante = valor;
+        BigDecimal valorTotal = BigDecimal.ZERO;
+
+        for (int i = 1; i <= meses; i++) {
+            BigDecimal taxaAnual = obterTaxaParaMes(taxas, i);
+            BigDecimal taxaMensal = taxaAnual.divide(BigDecimal.valueOf(12), 10, RoundingMode.HALF_EVEN);
+
+            BigDecimal juros = valorRestante.multiply(taxaMensal);
+            BigDecimal principal = calcularParcela(valorRestante, taxaMensal, meses - i + 1).subtract(juros);
+
+            valorTotal = valorTotal.add(juros.add(principal));
+            valorRestante = valorRestante.subtract(principal);
+        }
+
+        return valorTotal;
+    }
+
+    private BigDecimal obterTaxaParaMes(List<SimulationRequest.TaxaVariavel> taxas, int mes) {
+        return taxas.stream()
+                .filter(t -> t.getMesInicio() <= mes)
+                .map(SimulationRequest.TaxaVariavel::getTaxaAnual)
+                .reduce((first, second) -> second) // Última taxa aplicável ao mês
+                .orElseThrow(() -> new IllegalArgumentException("Taxa não encontrada para o mês: " + mes));
     }
 }

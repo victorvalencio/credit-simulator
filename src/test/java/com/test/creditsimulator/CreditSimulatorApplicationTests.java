@@ -1,9 +1,7 @@
-package com;
+package com.test.creditsimulator;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
 
-@SpringBootTest
 class CreditSimulatorApplicationTests {
 
 	@Test

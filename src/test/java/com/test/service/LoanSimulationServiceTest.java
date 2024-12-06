@@ -2,85 +2,167 @@ package com.test.service;
 
 
 import com.test.creditsimulator.dto.SimulationRequest;
+import com.test.creditsimulator.messaging.MessagingService;
+import com.test.creditsimulator.service.CurrencyConversionService;
 import com.test.creditsimulator.service.LoanSimulationService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 class LoanSimulationServiceTest {
 
-    private final LoanSimulationService service = new LoanSimulationService();
+    @Mock
+    private MessagingService messagingService;
+
+    @Mock
+    private CurrencyConversionService currencyService;
+
+    @InjectMocks
+    private LoanSimulationService simulationService;
+
+    @BeforeEach
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+    }
 
     @Test
-    void testSimular_CalculoCorreto() {
-        var requisicao = new SimulationRequest(
+    void testSimulateWithFixedRate_Success() {
+        when(currencyService.converter(any(BigDecimal.class), eq("BRL")))
+                .thenReturn(BigDecimal.valueOf(10000));
+
+        var request = new SimulationRequest(
                 BigDecimal.valueOf(10000),
                 LocalDate.of(1990, 5, 15),
-                12
+                12,
+                "FIXA",
+                null,
+                "BRL"
         );
 
-        var resultado = service.simulate(requisicao);
+        var result = simulationService.simulate(request);
 
-        assertNotNull(resultado);
-        assertEquals(BigDecimal.valueOf(10163.24).setScale(2, RoundingMode.HALF_EVEN), resultado.getValorTotalPago());
-        assertEquals(BigDecimal.valueOf(846.94).setScale(2, RoundingMode.HALF_EVEN), resultado.getParcelaMensal());
-        assertEquals(BigDecimal.valueOf(163.24).setScale(2, RoundingMode.HALF_EVEN), resultado.getTotalJurosPago());
+        assertNotNull(result);
+        assertEquals(BigDecimal.valueOf(10163.24).setScale(2), result.getValorTotalPago());
+        assertEquals(BigDecimal.valueOf(846.94).setScale(2), result.getParcelaMensal());
+        assertEquals(BigDecimal.valueOf(163.24).setScale(2), result.getTotalJurosPago());
+
+        verify(messagingService, times(1))
+                .sendMessage(eq("simulation-results"), anyString());
     }
 
     @Test
-    void testSimular_IdadeInvalida() {
-        var requisicao = new SimulationRequest(
+    void testSimulateWithVariableRate_Success() {
+        when(currencyService.converter(any(BigDecimal.class), eq("BRL")))
+                .thenReturn(BigDecimal.valueOf(10000));
+
+        var request = new SimulationRequest(
                 BigDecimal.valueOf(10000),
-                LocalDate.of(2010, 5, 15),
-                12
+                LocalDate.of(1990, 5, 15),
+                12,
+                "VARIAVEL",
+                List.of(
+                        new SimulationRequest.TaxaVariavel(1, BigDecimal.valueOf(0.03)),
+                        new SimulationRequest.TaxaVariavel(7, BigDecimal.valueOf(0.04))
+                ),
+                "BRL"
         );
 
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
-            service.simulate(requisicao);
-        });
+        var result = simulationService.simulate(request);
 
-        assertEquals("A idade do cliente deve estar entre 18 e 80 anos.", exception.getMessage());
+        assertNotNull(result);
+        assertEquals(BigDecimal.valueOf(10178.01).setScale(2), result.getValorTotalPago());
+        assertEquals(BigDecimal.valueOf(848.17).setScale(2), result.getParcelaMensal());
+        assertEquals(BigDecimal.valueOf(178.01).setScale(2), result.getTotalJurosPago());
+
+        verify(messagingService, times(1))
+                .sendMessage(eq("simulation-results"), anyString());
     }
 
     @Test
-    void testSimular_ValorEmprestimoInvalido() {
-        var requisicao = new SimulationRequest(
+    void testSimulateWithCurrencyConversion() {
+        when(currencyService.converter(any(BigDecimal.class), eq("USD")))
+                .thenReturn(BigDecimal.valueOf(2000));
+
+        var request = new SimulationRequest(
+                BigDecimal.valueOf(10000),
+                LocalDate.of(1990, 5, 15),
+                12,
+                "FIXA",
+                null,
+                "USD"
+        );
+
+        var result = simulationService.simulate(request);
+
+        assertNotNull(result);
+        assertEquals(BigDecimal.valueOf(2032.65).setScale(2), result.getValorTotalPago());
+        assertEquals(BigDecimal.valueOf(169.39).setScale(2), result.getParcelaMensal());
+        assertEquals(BigDecimal.valueOf(32.65).setScale(2), result.getTotalJurosPago());
+
+        verify(messagingService, times(1))
+                .sendMessage(eq("simulation-results"), anyString());
+    }
+
+    @Test
+    void testSimulateWithInvalidLoanAmount() {
+        var request = new SimulationRequest(
                 BigDecimal.valueOf(-10000),
                 LocalDate.of(1990, 5, 15),
-                12
+                12,
+                "FIXA",
+                null,
+                "BRL"
         );
 
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
-            service.simulate(requisicao);
+            simulationService.simulate(request);
         });
 
         assertEquals("O valor do empréstimo deve ser maior que zero.", exception.getMessage());
     }
 
     @Test
-    void testIsIdadeValida_Valida() {
-        var requisicao = new SimulationRequest(
+    void testSimulateWithInvalidMonths() {
+        var request = new SimulationRequest(
                 BigDecimal.valueOf(10000),
                 LocalDate.of(1990, 5, 15),
-                12
+                0,
+                "FIXA",
+                null,
+                "BRL"
         );
 
-        assertTrue(requisicao.isIdadeValida());
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
+            simulationService.simulate(request);
+        });
+
+        assertEquals("O número de meses deve ser maior que zero.", exception.getMessage());
     }
 
     @Test
-    void testIsIdadeValida_Invalida() {
-        SimulationRequest requisicao = new SimulationRequest(
+    void testSimulateWithInvalidAge() {
+        var request = new SimulationRequest(
                 BigDecimal.valueOf(10000),
                 LocalDate.of(2010, 5, 15),
-                12
+                12,
+                "FIXA",
+                null,
+                "BRL"
         );
 
-        assertFalse(requisicao.isIdadeValida());
-    }
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> {
+            simulationService.simulate(request);
+        });
 
+        assertEquals("A idade do cliente deve estar entre 18 e 80 anos.", exception.getMessage());
+    }
 }

@@ -43,4 +43,6 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>("Erro ao processar a requisição: " + ex.getMostSpecificCause().getMessage(), HttpStatus.BAD_REQUEST);
     }
 
+
+
 }
